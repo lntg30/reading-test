@@ -2,6 +2,8 @@
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reading Test</title>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -178,19 +180,26 @@ mark { background: var(--hl); color: var(--hl-ink); border-radius: 3px; padding:
 .prev { font-size: 14.5px; color: var(--bad); }
 .prev s { text-decoration-thickness: 2px; }
 .fb .ans { font-size: 15px; }
+.portal { max-width: 880px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 16px; }
+.card, .card > *, .row > * { min-width: 0; overflow-wrap: anywhere; }
+.chart { width: 100%; height: auto; display: block; color: var(--muted); }
+.chart text { fill: currentColor; font: 12px var(--font-ui); }
+.overdue { color: var(--bad); }
 </style>
-<title>Reading Test</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+
 </head>
 <body data-g="">
 
 <header class="bar" id="bar">
+  <button class="btn ghost small" id="btnClassBack" hidden>← Danh sách bài</button>
   <div class="brand"><b id="hTitle">Reading Test</b><span id="hSub"></span></div>
   <nav class="dots" id="dots" aria-label="Danh sách câu"></nav>
   <button class="btn primary small" id="btnTop" hidden></button>
 </header>
 
 <main>
+  <section id="vClass" class="center portal" hidden><div id="classContent"></div></section>
   <section id="vLoading" class="center">
     <div class="card" style="align-items:center"><div class="spinner" aria-hidden="true"></div><p id="loadMsg">Đang mở bài…</p></div>
   </section>
@@ -260,8 +269,10 @@ var G = document.body.getAttribute('data-g') || '';
 if (G.indexOf('<' + '?') >= 0) G = '';
 G = G.trim();
 if (!G) G = (new URLSearchParams(location.search).get('g') || '').trim();
-if (!G) G = (location.hash || '').replace(/^#/, '').trim();
+if (!G && !(new URLSearchParams(location.search).get('lop') || '').trim()) G = (location.hash || '').replace(/^#/, '').trim();
 G = G.toUpperCase();
+var LOP = !G ? (new URLSearchParams(location.search).get('lop') || '').trim().toUpperCase() : '';
+var C = { info: null, name: '', pin: '', busy: false };
 var LS_KEY = 'reading-test:' + G;
 var S = { info: null, ses: null, cur: 0, ans: {}, tab: 'question', busy: false, name: '', pin: '', timers: {} };
 var paras = [];
@@ -274,9 +285,10 @@ function esc(s) {
 }
 function nl(s) { return esc(s).replace(/\n/g, '<br>'); }
 function show(view) {
-  ['vLoading', 'vError', 'vStart', 'vQuiz', 'vReport'].forEach(function (v) { $(v).hidden = v !== view; });
+  ['vLoading', 'vError', 'vStart', 'vQuiz', 'vReport', 'vClass'].forEach(function (v) { $(v).hidden = v !== view; });
   $('dots').hidden = view !== 'vQuiz';
   if (view !== 'vQuiz') $('btnTop').hidden = true;
+  $('btnClassBack').hidden = !LOP || view === 'vClass';
   syncBar();
   window.scrollTo(0, 0);
 }
@@ -333,12 +345,102 @@ function fatal(title, msg) {
 // ---------------------------------------------------------------- Mở bài, chọn tên
 
 function init() {
+  // Apps Script đặt trang trong iframe; lấy tham số từ link ngoài qua API của Google.
+  if (!G && !LOP && window.google && google.script && google.script.url) {
+    google.script.url.getLocation(function (loc) {
+      LOP = String((loc.parameter && loc.parameter.lop) || '').trim().toUpperCase();
+      if (LOP) openClass();
+      else fatal('Link chưa đúng', 'Link thiếu mã bài hoặc mã lớp. Em mở đúng link cô gửi nhé.');
+    });
+    return;
+  }
+  if (LOP) return openClass();
   if (!G) return fatal('Link chưa đúng', 'Link thiếu mã bài. Em mở đúng link cô gửi nhé.');
   call('apiOpen', G).then(function (info) {
     S.info = info;
     renderStart();
   }, function (e) { fatal('Chưa mở được bài', msgOf(e)); });
 }
+
+function classReturn() { return LOP ? '<button class="btn ghost" data-act="class">Về danh sách bài</button>' : ''; }
+function classRemember(name) {
+  try { if (name) localStorage.setItem('reading-class:' + LOP, name); else localStorage.removeItem('reading-class:' + LOP); } catch (e) {}
+}
+function classChart(points) {
+  if (!points.length) return '<p>Em làm bài đầu tiên để xem tiến bộ của mình nhé.</p>';
+  var h = '<svg class="chart" viewBox="0 0 620 215" role="img" aria-label="Điểm vòng 1 qua các bài, từ 0 đến 100 phần trăm">';
+  [0, 25, 50, 75, 100].forEach(function (v) {
+    var y = 160 - v * 1.4;
+    h += '<path d="M45 ' + y + 'H600" stroke="var(--line)"/><text x="38" y="' + (y + 4) + '" text-anchor="end">' + v + '%</text>';
+  });
+  var xy = points.map(function (p, i) { return [points.length === 1 ? 315 : 70 + i * 500 / (points.length - 1), 160 - Math.max(0, Math.min(1, p.pct)) * 140]; });
+  h += '<polyline fill="none" stroke="var(--accent)" stroke-width="3" points="' + xy.map(function (p) { return p.join(','); }).join(' ') + '"/>';
+  points.forEach(function (p, i) {
+    var x = xy[i][0], y = xy[i][1];
+    h += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="var(--accent)"><title>' + esc(p.title) + ': ' + Math.round(p.pct * 100) + '%</title></circle>';
+    var step = Math.max(1, Math.ceil(points.length / 5));
+    if (i % step === 0 || i === points.length - 1) h += '<text x="' + x + '" y="185" text-anchor="middle">' + esc(p.title.slice(0, 12)) + (p.title.length > 12 ? '…' : '') + '</text>';
+  });
+  return h + '</svg>';
+}
+function openClass() {
+  if (C.busy) return;
+  C.busy = true;
+  var saves = [];
+  // Lưu cả câu đang gõ trước khi rời bài.
+  if (S.ses && S.ses.stage < 3) Object.keys(S.timers).forEach(function (num) {
+    saves.push(call('apiSave', S.ses.attemptId, S.ses.stage, +num, S.ans[num]));
+  });
+  clearTimers();
+  $('loadMsg').textContent = 'Đang mở lớp…'; show('vLoading');
+  Promise.all(saves).then(function () { return call('apiClass', LOP); }).then(function (info) {
+    C.info = info;
+    if (!C.name) { try { C.name = localStorage.getItem('reading-class:' + LOP) || ''; } catch (e) {} }
+    if (info.names.indexOf(C.name) < 0) { C.name = ''; classRemember(''); }
+    if (!C.name) { renderClassNames(''); return; }
+    return call('apiStudent', LOP, C.name, C.pin).then(renderClass, function (e) { renderClassNames(msgOf(e)); });
+  }).catch(function (e) { fatal('Chưa mở được lớp', msgOf(e)); }).then(function () { C.busy = false; });
+}
+function renderClassNames(message) {
+  $('hTitle').textContent = C.info.cls; $('hSub').textContent = 'Chọn tên để vào lớp';
+  $('classContent').innerHTML = '<div class="card"><h1 class="title">' + esc(C.info.cls) + '</h1><label class="f">Tên em<select id="className"><option value="">Chọn tên em</option>' + C.info.names.map(function (n) { return '<option' + (n === C.name ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') + '</select></label><label class="f">Mã PIN (nếu cô có phát)<input type="tel" inputmode="numeric" id="classPin" autocomplete="off"></label><p class="err" id="classErr" role="alert">' + esc(message) + '</p><button class="btn primary" data-class="enter">Vào lớp</button></div>';
+  show('vClass');
+}
+function renderClass(data) {
+  classRemember(C.name);
+  $('hTitle').textContent = C.info.cls; $('hSub').textContent = 'Danh sách bài';
+  var h = '<div class="card"><h1 class="title">' + esc(C.info.cls) + '</h1><p>Xin chào <b>' + esc(C.name) + '</b></p><button class="link" data-class="change">Không phải em? Đổi tên</button></div><h2 style="margin:24px 0 16px">Bài của lớp</h2><div class="cards">';
+  var tests = data.tests.map(function (t, i) { return { t: t, i: i }; }).sort(function (a, b) { return (a.t.status === 'chua' ? 0 : 1) - (b.t.status === 'chua' ? 0 : 1) || a.i - b.i; });
+  tests.forEach(function (entry) {
+    var t = entry.t, status = 'Chưa làm', button = 'Làm bài';
+    if (t.status === 'dang') { status = t.stage === 2 ? 'Đang làm vòng 2' : 'Đang làm'; button = 'Làm tiếp'; }
+    if (t.status === 'xong') { status = 'Xong · ' + t.score + '/' + t.total + (t.final != null ? ' (sau sửa ' + t.final + '/' + t.total + ')' : ''); button = 'Xem lại'; }
+    h += '<article class="card"><h3>' + esc(t.title) + '</h3><p class="note">' + esc(t.mode) + '</p>' + (t.due ? '<p class="' + (t.dueOver ? 'overdue' : 'note') + '">Hạn nộp: ' + esc(t.due) + (t.dueOver ? ' (đã qua)' : '') + '</p>' : '') + '<p>' + esc(status) + '</p><button class="btn primary" data-g="' + esc(t.g) + '">' + button + '</button></article>';
+  });
+  h += '</div>' + (!tests.length ? '<p>Cô chưa giao bài nào. Em quay lại sau nhé.</p>' : '') + '<div class="card" style="margin-top:24px"><h2>Tiến bộ của em</h2>' + classChart(data.progress);
+  if (data.errors.length) h += '<h3>Các dạng lỗi em cần chú ý</h3>' + data.errors.slice(0, 3).map(function (e) { return '<div class="type"><b>' + esc(e.label) + ' · ' + e.count + ' lần</b><p>' + esc(e.tip) + '</p></div>'; }).join('');
+  $('classContent').innerHTML = h + '</div>'; show('vClass');
+}
+function classStart(g, wantNew) {
+  if (C.busy) return;
+  C.busy = true; G = g; LS_KEY = 'reading-test:' + G;
+  $('loadMsg').textContent = 'Đang mở bài…'; show('vLoading');
+  call('apiStart', G, C.name, C.pin, !!wantNew).then(function (ses) {
+    S.name = C.name; S.pin = C.pin; load(ses);
+  }, function (e) { fatal('Chưa mở được bài', msgOf(e)); }).then(function () { C.busy = false; });
+}
+$('btnClassBack').addEventListener('click', openClass);
+$('classContent').addEventListener('click', function (ev) {
+  var b = ev.target.closest('button'); if (!b || C.busy) return;
+  if (b.hasAttribute('data-g')) return classStart(b.getAttribute('data-g'), false);
+  if (b.getAttribute('data-class') === 'change') { C.name = ''; C.pin = ''; S.ses = null; classRemember(''); renderClassNames(''); }
+  else if (b.getAttribute('data-class') === 'enter') {
+    var name = $('className').value, pin = $('classPin').value.trim();
+    if (!name) { $('classErr').textContent = 'Em chọn tên mình nhé.'; return; }
+    C.busy = true; b.disabled = true;
+    call('apiStudent', LOP, name, pin).then(function (data) { C.name = name; C.pin = pin; renderClass(data); }, function (e) { $('classErr').textContent = msgOf(e); }).then(function () { C.busy = false; b.disabled = false; });
+  }
+});
 
 function modeText(i) {
   if (i.mode === 'Kiểm tra') return 'Kiểm tra · làm một lần, không có gợi ý';
@@ -365,6 +467,7 @@ function renderStart() {
 function startErr(msg) { $('startErr').textContent = msg; $('startErr').hidden = !msg; }
 
 function start(wantNew) {
+  if (LOP) return classStart(G, wantNew);
   var name = $('selName').value;
   var pin = S.info.requirePin ? $('inPin').value.trim() : '';
   if (!wantNew) {
@@ -759,7 +862,7 @@ function renderRound1() {
     fix.map(function (q) { return 'Câu ' + q.label; }).join(', ') + '.</p>' +
     '<p>Mỗi câu có một gợi ý riêng cho câu trả lời của em. Em sửa lại rồi nộp vòng 2 để xem đáp án và giải thích.</p>' +
     '<div class="row"><button class="btn primary" data-act="fix">Bắt đầu sửa</button></div>';
-  $('report').innerHTML = h;
+  $('report').innerHTML = h + classReturn();
   show('vReport');
 }
 
@@ -773,7 +876,7 @@ function renderReport() {
     h += '<div class="score"><span class="big">' + r.score + '/' + r.total + '</span><span>điểm</span></div>';
     h += '<p>Bài kiểm tra đã được ghi nhận.' + (r.due ? ' Đáp án và giải thích sẽ mở sau hạn nộp (' + esc(r.due) + '). Em mở lại link này sau hạn để xem.' : '') + '</p>';
     h += '<div class="row"><button class="btn ghost" data-act="review">Xem lại câu đã chọn</button></div>';
-    $('report').innerHTML = h;
+    $('report').innerHTML = h + classReturn();
     show('vReport');
     return;
   }
@@ -797,7 +900,7 @@ function renderReport() {
   if (S.ses.kind === 'Luyện lại') h += '<p class="note">Lượt luyện lại không thay đổi điểm chính thức.</p>';
   h += '<div class="row"><button class="btn ghost" data-act="review">Xem lại bài và giải thích</button>' +
     (S.ses.canRetake ? '<button class="btn primary" data-act="retake">Làm lại để luyện</button>' : '') + '</div>';
-  $('report').innerHTML = h;
+  $('report').innerHTML = h + classReturn();
   show('vReport');
 }
 
@@ -863,6 +966,7 @@ $('report').addEventListener('click', function (ev) {
   var b = ev.target.closest('[data-act]');
   if (!b) return;
   var act = b.getAttribute('data-act');
+  if (act === 'class') { openClass(); return; }
   if (act === 'review') { S.cur = 0; openQuiz(); }
   else if (act === 'fix') { S.cur = firstOpen(); openQuiz(); }
   else start(true);
